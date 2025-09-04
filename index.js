@@ -4,8 +4,8 @@ const util = require('util');
 const os = require('os');
 const readline = require('readline');
 
-// CRITICAL: Use Railway's assigned PORT (Railway shows 8080 in dashboard)
-const PORT = parseInt(process.env.PORT) || 8080;
+// Use Railway's PORT environment variable (now configured to 3000)
+const PORT = parseInt(process.env.PORT) || 3000;
 const HOST = '0.0.0.0';
 
 // Railway might expect different binding
@@ -13,37 +13,21 @@ console.log(`[CONFIG] Will bind to ${HOST}:${PORT}`);
 console.log(`[CONFIG] PORT from env: ${process.env.PORT}`);
 console.log(`[CONFIG] Parsed PORT: ${PORT}`);
 
-// Log ALL environment variables for debugging
-console.log('[DEBUG] ALL ENVIRONMENT VARIABLES:');
-Object.keys(process.env)
-  .filter(key => key.startsWith('RAILWAY') || key === 'PORT' || key === 'HOST')
-  .forEach(key => {
-    console.log(`[DEBUG] ${key}=${process.env[key]}`);
-  });
+// Log key environment variables
+console.log('[INFO] Environment:');
+console.log(`[INFO] RAILWAY_ENVIRONMENT=${process.env.RAILWAY_ENVIRONMENT || 'not set'}`);
+console.log(`[INFO] RAILWAY_PUBLIC_DOMAIN=${process.env.RAILWAY_PUBLIC_DOMAIN || 'not set'}`);
+console.log(`[INFO] HAS_HUBSPOT_TOKEN=${!!process.env.PRIVATE_APP_ACCESS_TOKEN || !!process.env.HUBSPOT_ACCESS_TOKEN}`);
 
 // Track startup time
 const startTime = Date.now();
 let requestCount = 0;
 let healthCheckCount = 0;
 
-// Log ALL environment variables at startup (redact sensitive ones)
-console.log(`[STARTUP] === STARTING SERVER AT ${new Date().toISOString()} ===`);
-console.log(`[STARTUP] Node version: ${process.version}`);
-console.log(`[STARTUP] Platform: ${os.platform()}`);
-console.log(`[STARTUP] Architecture: ${os.arch()}`);
-console.log(`[STARTUP] Hostname: ${os.hostname()}`);
-console.log(`[STARTUP] PID: ${process.pid}`);
-console.log(`[STARTUP] PORT=${PORT}, HOST=${HOST}`);
-console.log(`[STARTUP] Working directory: ${process.cwd()}`);
-
-// Log important environment variables
-console.log(`[ENV] NODE_ENV=${process.env.NODE_ENV || 'not set'}`);
-console.log(`[ENV] RAILWAY_ENVIRONMENT=${process.env.RAILWAY_ENVIRONMENT || 'not set'}`);
-console.log(`[ENV] RAILWAY_PROJECT_ID=${process.env.RAILWAY_PROJECT_ID || 'not set'}`);
-console.log(`[ENV] RAILWAY_SERVICE_ID=${process.env.RAILWAY_SERVICE_ID || 'not set'}`);
-console.log(`[ENV] RAILWAY_DEPLOYMENT_ID=${process.env.RAILWAY_DEPLOYMENT_ID || 'not set'}`);
-console.log(`[ENV] DYNO=${process.env.DYNO || 'not set'}`);
-console.log(`[ENV] HAS_HUBSPOT_TOKEN=${!!process.env.PRIVATE_APP_ACCESS_TOKEN || !!process.env.HUBSPOT_ACCESS_TOKEN}`);
+// Log startup information
+console.log(`[STARTUP] Starting HubSpot MCP Bridge at ${new Date().toISOString()}`);
+console.log(`[STARTUP] Node ${process.version}, PID ${process.pid}`);
+console.log(`[STARTUP] Port: ${PORT}, Environment: ${process.env.RAILWAY_ENVIRONMENT || 'local'}`);
 
 // MCP Server process and state
 let mcpProcess = null;
@@ -272,9 +256,10 @@ const server = http.createServer((req, res) => {
   // Track connection
   activeConnections.add(requestId);
   
-  // Log EVERY request with details
-  console.log(`[REQ-${requestId}] ${req.method} ${req.url} from ${clientIp} (active: ${activeConnections.size})`);
-  console.log(`[REQ-${requestId}] Headers: ${JSON.stringify(req.headers)}`);
+  // Log requests (except health checks to reduce noise)
+  if (!req.url.includes('/health')) {
+    console.log(`[REQ-${requestId}] ${req.method} ${req.url} from ${clientIp}`);
+  }
   
   // CRITICAL: Health check must respond IMMEDIATELY
   if (req.url === '/' || req.url === '/health' || req.url === '/healthz') {
@@ -513,18 +498,13 @@ server.on('error', (err) => {
   }
 });
 
-// Periodic detailed health log
+// Periodic health log (reduced frequency since service is stable)
 setInterval(() => {
   const memUsage = process.memoryUsage();
   const uptime = Math.floor(process.uptime());
   
-  console.log(`[HEARTBEAT] ====== ${new Date().toISOString()} ======`);
-  console.log(`[HEARTBEAT] Uptime: ${uptime}s (${Math.floor(uptime/60)}m ${uptime%60}s)`);
-  console.log(`[HEARTBEAT] Memory: RSS=${Math.floor(memUsage.rss / 1024 / 1024)}MB, Heap=${Math.floor(memUsage.heapUsed / 1024 / 1024)}MB`);
-  console.log(`[HEARTBEAT] Requests: Total=${requestCount}, HealthChecks=${healthCheckCount}, Active=${activeConnections.size}`);
-  console.log(`[HEARTBEAT] Port: ${PORT}, PID: ${process.pid}`);
-  console.log(`[HEARTBEAT] ================================`);
-}, 30000); // Every 30 seconds
+  console.log(`[HEARTBEAT] Uptime: ${uptime}s, Memory: ${Math.floor(memUsage.heapUsed / 1024 / 1024)}MB, Requests: ${requestCount}, MCP: ${mcpReady ? 'Ready' : 'Not Ready'}`);
+}, 60000); // Every 60 seconds
 
 // Error handlers with detailed logging
 process.on('uncaughtException', (error) => {
