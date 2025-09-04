@@ -187,9 +187,26 @@ server.listen(PORT, HOST, () => {
   mcpProcess.stdout.on('data', (data) => {
     const output = data.toString();
     console.log('MCP stdout:', output);
-    if (output.includes('Server connected') || output.includes('ready')) {
-      mcpReady = true;
-      console.log('✅ MCP server is ready');
+    
+    // Check if this is a successful initialization response
+    try {
+      const response = JSON.parse(output);
+      if (response.id === 1 && response.result && response.result.protocolVersion) {
+        mcpReady = true;
+        console.log('✅ MCP server initialized successfully');
+        
+        // Send initialized notification
+        const initializedNotification = {
+          jsonrpc: '2.0',
+          method: 'notifications/initialized'
+        };
+        mcpProcess.stdin.write(JSON.stringify(initializedNotification) + '\n');
+      }
+    } catch (e) {
+      // Not JSON, check for other ready indicators
+      if (output.includes('Server connected') || output.includes('ready')) {
+        console.log('MCP server appears ready');
+      }
     }
   });
   
@@ -206,11 +223,8 @@ server.listen(PORT, HOST, () => {
   mcpProcess.on('exit', (code) => {
     console.log(`MCP server exited with code ${code}`);
     mcpReady = false;
-    // Try to restart the MCP server after 5 seconds
-    setTimeout(() => {
-      console.log('Attempting to restart MCP server...');
-      startMCPServer();
-    }, 5000);
+    // Don't auto-restart to avoid infinite loops
+    // The container orchestrator should handle restarts
   });
   
   // Send initialization request to MCP server
@@ -222,6 +236,7 @@ server.listen(PORT, HOST, () => {
         method: 'initialize',
         params: {
           protocolVersion: '2024-11-05',
+          capabilities: {},
           clientInfo: {
             name: 'http-bridge',
             version: '1.0.0'
