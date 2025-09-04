@@ -1,8 +1,5 @@
 [phases.setup]
-nixPkgs = ["nodejs-18_x"]
+nixPkgs = ["nodejs-18_x", "bash"]
 
 [start]
-cmd = "npm start"
-
-[deploy]
-startCommand = "npm start"
+cmd = "node index.js"
