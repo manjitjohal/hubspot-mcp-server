@@ -9,7 +9,7 @@ const HOST = '0.0.0.0';
 
 console.log(`Starting HubSpot API Bridge on ${HOST}:${PORT}...`);
 console.log('Environment check:', {
-  hasToken: !!process.env.HUBSPOT_ACCESS_TOKEN,
+  hasToken: !!process.env.PRIVATE_APP_ACCESS_TOKEN || !!process.env.HUBSPOT_ACCESS_TOKEN,
   port: PORT,
   node: process.version
 });
@@ -74,8 +74,19 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   
-  // Health check endpoints
+  // Health check endpoints - respond immediately for Railway
   if (req.method === 'GET' && (req.url === '/health' || req.url === '/healthz' || req.url === '/')) {
+    // Respond immediately with minimal data for health checks
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ 
+      status: 'healthy',
+      timestamp: new Date().toISOString()
+    }));
+    return;
+  }
+  
+  // Detailed status endpoint
+  if (req.method === 'GET' && req.url === '/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ 
       status: 'healthy',
@@ -84,7 +95,11 @@ const server = http.createServer(async (req, res) => {
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       memory: process.memoryUsage(),
-      hasToken: !!process.env.HUBSPOT_ACCESS_TOKEN
+      hasToken: !!process.env.PRIVATE_APP_ACCESS_TOKEN || !!process.env.HUBSPOT_ACCESS_TOKEN,
+      environment: {
+        port: PORT,
+        node: process.version
+      }
     }));
     return;
   }
@@ -162,8 +177,9 @@ server.listen(PORT, HOST, () => {
   console.log('Server ready to handle requests');
   
   // Check HubSpot token
-  if (!process.env.HUBSPOT_ACCESS_TOKEN) {
-    console.warn('⚠️  Warning: HUBSPOT_ACCESS_TOKEN not set');
+  const hasToken = process.env.PRIVATE_APP_ACCESS_TOKEN || process.env.HUBSPOT_ACCESS_TOKEN;
+  if (!hasToken) {
+    console.warn('⚠️  Warning: No HubSpot access token found (PRIVATE_APP_ACCESS_TOKEN or HUBSPOT_ACCESS_TOKEN)');
   } else {
     console.log('✅ HubSpot access token configured');
   }
