@@ -1,8 +1,8 @@
 const http = require('http');
-const { exec } = require('child_process');
+const { spawn } = require('child_process');
 const util = require('util');
-const execPromise = util.promisify(exec);
 const os = require('os');
+const readline = require('readline');
 
 // CRITICAL: Use Railway's assigned PORT (Railway shows 8080 in dashboard)
 const PORT = parseInt(process.env.PORT) || 8080;
@@ -45,49 +45,219 @@ console.log(`[ENV] RAILWAY_DEPLOYMENT_ID=${process.env.RAILWAY_DEPLOYMENT_ID || 
 console.log(`[ENV] DYNO=${process.env.DYNO || 'not set'}`);
 console.log(`[ENV] HAS_HUBSPOT_TOKEN=${!!process.env.PRIVATE_APP_ACCESS_TOKEN || !!process.env.HUBSPOT_ACCESS_TOKEN}`);
 
+// MCP Server process and state
+let mcpProcess = null;
+let mcpReady = false;
+let mcpInitialized = false;
+const pendingRequests = new Map();
+let requestIdCounter = 1;
+
 // Simple in-memory cache for API responses
 const cache = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-// Helper to call HubSpot MCP server CLI
+// Initialize HubSpot MCP Server
+function initializeMCPServer() {
+  if (mcpProcess) {
+    console.log('[MCP] Server already running');
+    return;
+  }
+
+  console.log('[MCP] Starting HubSpot MCP server...');
+  
+  // Set up environment for HubSpot MCP server
+  const mcpEnv = {
+    ...process.env,
+    HUBSPOT_ACCESS_TOKEN: process.env.PRIVATE_APP_ACCESS_TOKEN || process.env.HUBSPOT_ACCESS_TOKEN
+  };
+
+  // Start the MCP server process
+  mcpProcess = spawn('npx', ['@hubspot/mcp-server'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: mcpEnv
+  });
+
+  // Handle MCP server stdout
+  const rl = readline.createInterface({
+    input: mcpProcess.stdout,
+    crlfDelay: Infinity
+  });
+
+  rl.on('line', (line) => {
+    console.log(`[MCP-OUT] ${line}`);
+    
+    try {
+      const response = JSON.parse(line);
+      
+      // Handle initialization response
+      if (response.id === 'init' && response.result) {
+        mcpReady = true;
+        console.log('[MCP] Server initialized successfully');
+        
+        // Send initialized notification
+        const initializedNotification = {
+          jsonrpc: '2.0',
+          method: 'notifications/initialized'
+        };
+        mcpProcess.stdin.write(JSON.stringify(initializedNotification) + '\n');
+        mcpInitialized = true;
+        console.log('[MCP] Initialization complete');
+      }
+      
+      // Handle pending request responses
+      if (response.id && pendingRequests.has(response.id)) {
+        const { resolve, reject } = pendingRequests.get(response.id);
+        pendingRequests.delete(response.id);
+        
+        if (response.error) {
+          reject(new Error(response.error.message || 'MCP server error'));
+        } else {
+          resolve(response.result || response);
+        }
+      }
+      
+    } catch (error) {
+      // Non-JSON output from MCP server
+      if (line.includes('Server connected') || line.includes('ready')) {
+        console.log('[MCP] Server appears ready');
+      }
+    }
+  });
+
+  // Handle MCP server stderr
+  mcpProcess.stderr.on('data', (data) => {
+    const output = data.toString();
+    console.log(`[MCP-ERR] ${output}`);
+    
+    if (output.includes('Server connected')) {
+      console.log('[MCP] Server connected via stderr');
+    }
+  });
+
+  mcpProcess.on('error', (error) => {
+    console.error('[MCP] Process error:', error);
+    mcpReady = false;
+    mcpInitialized = false;
+  });
+
+  mcpProcess.on('exit', (code) => {
+    console.log(`[MCP] Process exited with code ${code}`);
+    mcpReady = false;
+    mcpInitialized = false;
+    mcpProcess = null;
+    
+    // Clear pending requests
+    pendingRequests.forEach(({ reject }) => {
+      reject(new Error('MCP server process exited'));
+    });
+    pendingRequests.clear();
+  });
+
+  // Send initialization request after a short delay
+  setTimeout(() => {
+    if (mcpProcess && !mcpReady) {
+      console.log('[MCP] Sending initialization request...');
+      const initRequest = {
+        jsonrpc: '2.0',
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: {
+            name: 'hubspot-mcp-bridge',
+            version: '1.0.0'
+          }
+        },
+        id: 'init'
+      };
+      mcpProcess.stdin.write(JSON.stringify(initRequest) + '\n');
+    }
+  }, 1000);
+}
+
+// Helper to call HubSpot MCP server
 async function callMCPServer(method, params = {}) {
   const cacheKey = `${method}:${JSON.stringify(params)}`;
   
-  // Check cache
+  // Check cache first
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    console.log(`[MCP] Cache hit for ${method}`);
     return cached.data;
   }
-  
-  try {
-    // Build the command to execute
+
+  // Ensure MCP server is initialized
+  if (!mcpProcess || !mcpInitialized) {
+    console.log('[MCP] Server not ready, initializing...');
+    initializeMCPServer();
+    
+    // Wait for initialization
+    let attempts = 0;
+    while ((!mcpReady || !mcpInitialized) && attempts < 20) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      attempts++;
+    }
+    
+    if (!mcpReady || !mcpInitialized) {
+      throw new Error('MCP server failed to initialize');
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    const requestId = requestIdCounter++;
     const request = {
       jsonrpc: '2.0',
       method: method,
       params: params,
-      id: Date.now()
+      id: requestId
     };
+
+    console.log(`[MCP] Sending request: ${method} (id: ${requestId})`);
     
-    // For now, return mock data until we implement proper MCP communication
-    const mockResponse = {
-      success: true,
-      method: method,
-      params: params,
-      message: 'HubSpot MCP Server Bridge is running',
-      timestamp: new Date().toISOString()
-    };
+    // Store the request handlers
+    pendingRequests.set(requestId, { resolve, reject });
     
-    // Cache the response
-    cache.set(cacheKey, {
-      data: mockResponse,
-      timestamp: Date.now()
+    // Set timeout for request
+    const timeout = setTimeout(() => {
+      if (pendingRequests.has(requestId)) {
+        pendingRequests.delete(requestId);
+        reject(new Error('MCP request timeout'));
+      }
+    }, 10000); // 10 second timeout
+
+    // Override resolve/reject to clear timeout
+    const originalResolve = resolve;
+    const originalReject = reject;
+    
+    pendingRequests.set(requestId, {
+      resolve: (result) => {
+        clearTimeout(timeout);
+        
+        // Cache successful responses
+        if (result) {
+          cache.set(cacheKey, {
+            data: result,
+            timestamp: Date.now()
+          });
+        }
+        
+        originalResolve(result);
+      },
+      reject: (error) => {
+        clearTimeout(timeout);
+        originalReject(error);
+      }
     });
-    
-    return mockResponse;
-  } catch (error) {
-    console.error('[ERROR] MCP server error:', error);
-    throw error;
-  }
+
+    // Send request to MCP server
+    try {
+      mcpProcess.stdin.write(JSON.stringify(request) + '\n');
+    } catch (error) {
+      clearTimeout(timeout);
+      pendingRequests.delete(requestId);
+      reject(new Error(`Failed to send MCP request: ${error.message}`));
+    }
+  });
 }
 
 // Track active connections
@@ -323,6 +493,12 @@ server.listen(PORT, HOST, () => {
   console.log('[READY] Server is ready to accept connections');
   console.log('[READY] Application started successfully');
   console.log('[READY] ========================================');
+  
+  // Initialize MCP server after HTTP server is ready
+  setTimeout(() => {
+    console.log('[READY] Initializing HubSpot MCP server...');
+    initializeMCPServer();
+  }, 2000);
 });
 
 // Handle server errors
@@ -381,6 +557,13 @@ function gracefulShutdown(signal) {
   console.log(`[SHUTDOWN] Total requests served: ${requestCount}`);
   console.log(`[SHUTDOWN] Active connections: ${activeConnections.size}`);
   console.log(`[SHUTDOWN] Initiating graceful shutdown...`);
+  
+  // Clean up MCP server process
+  if (mcpProcess) {
+    console.log('[SHUTDOWN] Terminating MCP server...');
+    mcpProcess.kill('SIGTERM');
+    mcpProcess = null;
+  }
   
   server.close(() => {
     console.log('[SHUTDOWN] HTTP server closed successfully');
