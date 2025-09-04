@@ -1,11 +1,57 @@
 const http = require('http');
 const { spawn } = require('child_process');
+const readline = require('readline');
 
 // Railway port
 const PORT = process.env.PORT || 3000;
 const HOST = '0.0.0.0';
 
+// Store MCP process reference
+let mcpProcess = null;
+let mcpReady = false;
+
 console.log(`Starting HTTP bridge on ${HOST}:${PORT}...`);
+
+// Function to send request to MCP server and get response
+async function sendToMCP(request) {
+  return new Promise((resolve, reject) => {
+    if (!mcpProcess || !mcpReady) {
+      reject(new Error('MCP server not ready'));
+      return;
+    }
+    
+    // Create readline interface to read response
+    const rl = readline.createInterface({
+      input: mcpProcess.stdout,
+      crlfDelay: Infinity
+    });
+    
+    let responseData = '';
+    
+    rl.on('line', (line) => {
+      responseData = line;
+      rl.close();
+    });
+    
+    rl.on('close', () => {
+      try {
+        const response = JSON.parse(responseData);
+        resolve(response);
+      } catch (error) {
+        reject(new Error('Invalid JSON response from MCP server'));
+      }
+    });
+    
+    // Send request to MCP server
+    mcpProcess.stdin.write(JSON.stringify(request) + '\n');
+    
+    // Timeout after 5 seconds
+    setTimeout(() => {
+      rl.close();
+      reject(new Error('MCP server timeout'));
+    }, 5000);
+  });
+}
 
 // Create HTTP server that proxies to MCP server
 const server = http.createServer((req, res) => {
@@ -22,7 +68,11 @@ const server = http.createServer((req, res) => {
   
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', message: 'HubSpot MCP Server is running' }));
+    res.end(JSON.stringify({ 
+      status: 'ok', 
+      message: 'HubSpot MCP Server is running',
+      mcpReady: mcpReady 
+    }));
     return;
   }
   
@@ -31,7 +81,7 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ 
       name: 'HubSpot MCP Server',
       version: '1.0.0',
-      status: 'running',
+      status: mcpReady ? 'running' : 'starting',
       endpoints: {
         health: '/health',
         mcp: '/mcp'
@@ -47,28 +97,72 @@ const server = http.createServer((req, res) => {
       body += chunk.toString();
     });
     
-    req.on('end', () => {
-      // For now, return a mock MCP response to test if Railway can reach us
-      const mockResponse = {
-        jsonrpc: '2.0',
-        result: {
-          protocolVersion: '2024-11-05',
-          serverInfo: {
-            name: 'HubSpot MCP Server',
-            version: '1.0.0'
-          },
-          capabilities: {
-            tools: {
-              list: true,
-              call: true
-            }
+    req.on('end', async () => {
+      try {
+        const request = JSON.parse(body);
+        
+        // If MCP server is ready, forward the request
+        if (mcpReady) {
+          try {
+            const response = await sendToMCP(request);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(response));
+          } catch (error) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ 
+              jsonrpc: '2.0',
+              error: { 
+                code: -32603, 
+                message: 'Internal error: ' + error.message 
+              },
+              id: request.id || null
+            }));
           }
-        },
-        id: 1
-      };
-      
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(mockResponse));
+        } else {
+          // Return initialization response if called with initialize method
+          if (request.method === 'initialize') {
+            const initResponse = {
+              jsonrpc: '2.0',
+              result: {
+                protocolVersion: '2024-11-05',
+                serverInfo: {
+                  name: 'HubSpot MCP Server',
+                  version: '1.0.0'
+                },
+                capabilities: {
+                  tools: {
+                    list: true,
+                    call: true
+                  }
+                }
+              },
+              id: request.id || 1
+            };
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(initResponse));
+          } else {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ 
+              jsonrpc: '2.0',
+              error: { 
+                code: -32603, 
+                message: 'MCP server is starting, please wait' 
+              },
+              id: request.id || null
+            }));
+          }
+        }
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+          jsonrpc: '2.0',
+          error: { 
+            code: -32700, 
+            message: 'Parse error' 
+          },
+          id: null
+        }));
+      }
     });
     return;
   }
@@ -77,25 +171,89 @@ const server = http.createServer((req, res) => {
   res.end(JSON.stringify({ error: 'Not found' }));
 });
 
+// Start HTTP server first
 server.listen(PORT, HOST, () => {
   console.log(`✅ HTTP bridge server listening on ${HOST}:${PORT}`);
   console.log(`✅ Railway should now be able to reach this server`);
   
-  // Start the actual MCP server in the background
-  console.log('Starting HubSpot MCP server in background...');
-  const mcpProcess = spawn('npx', ['@hubspot/mcp-server'], {
-    env: process.env,
-    stdio: 'inherit'
+  // Start the actual MCP server
+  console.log('Starting HubSpot MCP server...');
+  mcpProcess = spawn('npx', ['@hubspot/mcp-server'], {
+    env: { ...process.env, HUBSPOT_ACCESS_TOKEN: process.env.HUBSPOT_ACCESS_TOKEN || '' },
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  
+  // Handle MCP server stdout
+  mcpProcess.stdout.on('data', (data) => {
+    const output = data.toString();
+    console.log('MCP stdout:', output);
+    if (output.includes('Server connected') || output.includes('ready')) {
+      mcpReady = true;
+      console.log('✅ MCP server is ready');
+    }
+  });
+  
+  // Handle MCP server stderr
+  mcpProcess.stderr.on('data', (data) => {
+    console.error('MCP stderr:', data.toString());
   });
   
   mcpProcess.on('error', (error) => {
     console.error('MCP server error:', error);
+    mcpReady = false;
   });
+  
+  mcpProcess.on('exit', (code) => {
+    console.log(`MCP server exited with code ${code}`);
+    mcpReady = false;
+    // Try to restart the MCP server after 5 seconds
+    setTimeout(() => {
+      console.log('Attempting to restart MCP server...');
+      startMCPServer();
+    }, 5000);
+  });
+  
+  // Send initialization request to MCP server
+  setTimeout(() => {
+    if (mcpProcess && !mcpReady) {
+      console.log('Sending initialization to MCP server...');
+      const initRequest = {
+        jsonrpc: '2.0',
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          clientInfo: {
+            name: 'http-bridge',
+            version: '1.0.0'
+          }
+        },
+        id: 1
+      };
+      mcpProcess.stdin.write(JSON.stringify(initRequest) + '\n');
+    }
+  }, 2000);
 });
+
+// Keep the process alive
+setInterval(() => {
+  // Health check
+}, 60000);
 
 // Handle shutdown
 process.on('SIGTERM', () => {
   console.log('Shutting down...');
+  if (mcpProcess) {
+    mcpProcess.kill();
+  }
+  server.close();
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('Shutting down...');
+  if (mcpProcess) {
+    mcpProcess.kill();
+  }
   server.close();
   process.exit(0);
 });
