@@ -66,12 +66,14 @@ const server = http.createServer((req, res) => {
     return;
   }
   
-  if (req.method === 'GET' && req.url === '/health') {
+  // Railway health check - must respond quickly
+  if (req.method === 'GET' && (req.url === '/health' || req.url === '/healthz')) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ 
       status: 'ok', 
       message: 'HubSpot MCP Server is running',
-      mcpReady: mcpReady 
+      mcpReady: mcpReady,
+      timestamp: new Date().toISOString()
     }));
     return;
   }
@@ -249,26 +251,55 @@ server.listen(PORT, HOST, () => {
   }, 2000);
 });
 
-// Keep the process alive
+// Keep the process alive and log health status
 setInterval(() => {
-  // Health check
-}, 60000);
+  console.log(`Health check: Server running, MCP ready: ${mcpReady}`);
+}, 30000);
 
-// Handle shutdown
+// Track if we're shutting down
+let isShuttingDown = false;
+
+// Handle shutdown gracefully
 process.on('SIGTERM', () => {
-  console.log('Shutting down...');
-  if (mcpProcess) {
-    mcpProcess.kill();
-  }
-  server.close();
-  process.exit(0);
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  
+  console.log('Received SIGTERM, shutting down gracefully...');
+  
+  // Give time for graceful shutdown
+  setTimeout(() => {
+    if (mcpProcess) {
+      mcpProcess.kill();
+    }
+    server.close(() => {
+      console.log('HTTP server closed');
+      process.exit(0);
+    });
+  }, 100);
 });
 
 process.on('SIGINT', () => {
-  console.log('Shutting down...');
-  if (mcpProcess) {
-    mcpProcess.kill();
-  }
-  server.close();
-  process.exit(0);
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  
+  console.log('Received SIGINT, shutting down gracefully...');
+  
+  setTimeout(() => {
+    if (mcpProcess) {
+      mcpProcess.kill();
+    }
+    server.close(() => {
+      console.log('HTTP server closed');
+      process.exit(0);
+    });
+  }, 100);
+});
+
+// Prevent process from exiting on uncaught errors
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
