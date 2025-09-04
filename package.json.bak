@@ -1,0 +1,15 @@
+{
+  "name": "official-hubspot-mcp-server",
+  "version": "1.0.0",
+  "description": "Runs the official HubSpot MCP server on Railway.",
+  "main": "index.js",
+  "scripts": {
+    "start": "npx @hubspot/mcp-server"
+  },
+  "dependencies": {
+    "@hubspot/mcp-server": "latest"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
