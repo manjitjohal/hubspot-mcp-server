@@ -409,3 +409,4 @@ process.on('exit', (code) => {
 // CRITICAL: Log that we've completed initialization
 console.log('[STARTUP] Server initialization complete, starting HTTP listener...');
 console.log('[STARTUP] Waiting for server.listen() callback...');
+console.log('[STARTUP] BUILD: Force new deployment - commit 90bc20a');
