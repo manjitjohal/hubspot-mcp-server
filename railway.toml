@@ -1,11 +1,7 @@
 [build]
-builder = "nixpacks"
+builder = "dockerfile"
 
 [deploy]
 healthcheckPath = "/"
 healthcheckTimeout = 300
 restartPolicyType = "never"
-
-[experimental]
-  [experimental.runtime]
-    type = "web"
