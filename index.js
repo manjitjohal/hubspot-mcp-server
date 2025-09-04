@@ -8,6 +8,9 @@ const os = require('os');
 const PORT = parseInt(process.env.PORT) || 3000;
 const HOST = '0.0.0.0';
 
+// Railway might expect different binding
+console.log(`[CONFIG] Will bind to ${HOST}:${PORT}`);
+
 // Log ALL environment variables for debugging
 console.log('[DEBUG] ALL ENVIRONMENT VARIABLES:');
 Object.keys(process.env)
@@ -272,12 +275,39 @@ server.on('connection', (socket) => {
 // CRITICAL: Start server with callback to ensure Railway knows it's ready
 server.listen(PORT, HOST, () => {
   const listenTime = Date.now() - startTime;
+  const address = server.address();
+  
   console.log(`[READY] ========================================`);
   console.log(`[READY] Server listening on http://${HOST}:${PORT}`);
+  console.log(`[READY] Server address: ${JSON.stringify(address)}`);
   console.log(`[READY] Startup time: ${listenTime}ms`);
   console.log(`[READY] PID: ${process.pid}`);
   console.log(`[READY] Health check: http://${HOST}:${PORT}/health`);
   console.log(`[READY] Status page: http://${HOST}:${PORT}/status`);
+  console.log(`[READY] Public URL: https://${process.env.RAILWAY_STATIC_URL || 'unknown'}`);
+  
+  // Test internal connectivity after server starts
+  setTimeout(() => {
+    const testUrl = `http://localhost:${PORT}/health`;
+    console.log(`[READY] Testing internal connectivity to: ${testUrl}`);
+    
+    const http = require('http');
+    const req = http.get(testUrl, (res) => {
+      console.log(`[TEST] Internal health check: ${res.statusCode}`);
+      res.on('data', (chunk) => {
+        console.log(`[TEST] Response: ${chunk.toString()}`);
+      });
+    });
+    
+    req.on('error', (err) => {
+      console.error(`[TEST] Internal connectivity failed:`, err.message);
+    });
+    
+    req.setTimeout(5000, () => {
+      console.error(`[TEST] Internal health check timeout`);
+      req.destroy();
+    });
+  }, 1000);
   
   // Check HubSpot token
   const hasToken = process.env.PRIVATE_APP_ACCESS_TOKEN || process.env.HUBSPOT_ACCESS_TOKEN;
