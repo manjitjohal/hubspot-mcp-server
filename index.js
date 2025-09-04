@@ -4,12 +4,14 @@ const util = require('util');
 const execPromise = util.promisify(exec);
 const os = require('os');
 
-// CRITICAL: Use Railway's PORT environment variable
-const PORT = parseInt(process.env.PORT) || 3000;
+// CRITICAL: Use Railway's assigned PORT (Railway shows 8080 in dashboard)
+const PORT = parseInt(process.env.PORT) || 8080;
 const HOST = '0.0.0.0';
 
 // Railway might expect different binding
 console.log(`[CONFIG] Will bind to ${HOST}:${PORT}`);
+console.log(`[CONFIG] PORT from env: ${process.env.PORT}`);
+console.log(`[CONFIG] Parsed PORT: ${PORT}`);
 
 // Log ALL environment variables for debugging
 console.log('[DEBUG] ALL ENVIRONMENT VARIABLES:');

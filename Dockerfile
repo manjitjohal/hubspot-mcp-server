@@ -11,8 +11,8 @@ RUN npm ci --only=production
 # Copy application code
 COPY index.js ./
 
-# Expose port (Railway will override with PORT env var)
-EXPOSE 3000
+# Expose port (Railway assigns 8080)
+EXPOSE 8080
 
 # Run the application directly
 CMD ["node", "index.js"]
