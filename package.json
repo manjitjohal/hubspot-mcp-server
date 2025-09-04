@@ -4,7 +4,7 @@
   "description": "Runs the official HubSpot MCP server on Railway.",
   "main": "index.js",
   "scripts": {
-    "start": "npx @hubspot/mcp-server"
+    "start": "node index.js"
   },
   "dependencies": {
     "@hubspot/mcp-server": "latest"
