@@ -59,14 +59,18 @@ async function callMCPServer(method, params = {}) {
   }
 }
 
-// Create HTTP server
+// Create HTTP server with keep-alive
 const server = http.createServer(async (req, res) => {
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Connection', 'keep-alive');
   
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  // Only log non-health check requests to reduce noise
+  if (!req.url.includes('/health')) {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  }
   
   if (req.method === 'OPTIONS') {
     res.writeHead(200);
@@ -167,11 +171,16 @@ const server = http.createServer(async (req, res) => {
   }));
 });
 
+// Configure server with keep-alive
+server.keepAliveTimeout = 120000; // 2 minutes
+server.headersTimeout = 120000; // 2 minutes
+
 // Start server
 server.listen(PORT, HOST, () => {
-  console.log(`✅ Server listening on http://${HOST}:${PORT}`);
+  console.log(`✅ Web service listening on http://${HOST}:${PORT}`);
   console.log('✅ Health check available at /health');
   console.log('✅ API info available at /api');
+  console.log(`✅ Process type: ${process.env.DYNO || 'web'}`);
   
   // Log initial status
   console.log('Server ready to handle requests');

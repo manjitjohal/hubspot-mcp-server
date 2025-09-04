@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["nodejs-18_x"]
+
+[start]
+cmd = "npm start"
+
+[deploy]
+startCommand = "npm start"
