@@ -8,6 +8,14 @@ const os = require('os');
 const PORT = parseInt(process.env.PORT) || 3000;
 const HOST = '0.0.0.0';
 
+// Log ALL environment variables for debugging
+console.log('[DEBUG] ALL ENVIRONMENT VARIABLES:');
+Object.keys(process.env)
+  .filter(key => key.startsWith('RAILWAY') || key === 'PORT' || key === 'HOST')
+  .forEach(key => {
+    console.log(`[DEBUG] ${key}=${process.env[key]}`);
+  });
+
 // Track startup time
 const startTime = Date.now();
 let requestCount = 0;
